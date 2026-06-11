@@ -3,9 +3,11 @@
 import { FormEvent, useEffect, useState } from "react";
 import Navbar from "../../components/Navbar";
 
+// Backend API URL (falls back to localhost during development)
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3000";
+process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3000";
 
+// Default form values used when creating a new ABI registry entry
 const EMPTY_ABI = {
   contractAddress: "",
   contractType: "",
@@ -19,6 +21,7 @@ const EMPTY_ABI = {
     "contractType": { "type": "string" }
   }
 }`,
+
   abiSchema: `{
   "spec": {
     "entries": []
