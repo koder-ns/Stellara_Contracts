@@ -1,9 +1,7 @@
 #![no_std]
-pub mod nonce;
-pub mod reentrancy_guard;
+use shared::nonce::NonceManager;
+use shared::reentrancy_guard::ReentrancyGuard;
 use soroban_sdk::{contract, contractimpl, contracttype, Env, Symbol, Vec, BytesN, Address, Bytes};
-use crate::nonce::NonceManager;
-use crate::reentrancy_guard::ReentrancyGuard;
 
 #[contract]
 pub struct CrossChainRouter;

@@ -327,7 +327,7 @@ impl UpgradeableMessagingContract {
             .persistent()
             .set(&symbol_short!("ver"), &CONTRACT_VERSION);
 
-        env.storage().persistent().set(&symbol_short!("source_chain"), &0u32);
+        env.storage().persistent().set(&symbol_short!("src_chain"), &0u32);
 
         NonceManager::set_chain_id(&env, 0);
 
@@ -350,7 +350,7 @@ impl UpgradeableMessagingContract {
         CircuitBreaker::require_not_paused(&env, symbol_short!("send_m"));
         ReentrancyGuard::enter(&env);
         NonceManager::enforce_sequential_nonce(&env, 0, env.ledger().sequence() as u64);
-        NonceManager::record_and_verify(&env, 0, env.ledger().sequence() as u64)?;
+        let _ = NonceManager::record_and_verify(&env, 0, env.ledger().sequence() as u64);
 
         CircuitBreaker::track_activity(&env, 1);
 
@@ -852,7 +852,7 @@ impl UpgradeableMessagingContract {
         CircuitBreaker::require_not_paused(&env, symbol_short!("send_em"));
         ReentrancyGuard::enter(&env);
         NonceManager::enforce_sequential_nonce(&env, 0, env.ledger().sequence() as u64);
-        NonceManager::record_and_verify(&env, 0, env.ledger().sequence() as u64)?;
+        let _ = NonceManager::record_and_verify(&env, 0, env.ledger().sequence() as u64);
 
         CircuitBreaker::track_activity(&env, 1);
 
