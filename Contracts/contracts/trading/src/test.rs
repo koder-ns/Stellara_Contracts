@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use shared::circuit_breaker::{CircuitBreakerConfig, PauseLevel};
+use shared::circuit_breaker::CircuitBreakerConfig;
 use shared::governance::ProposalStatus;
 use soroban_sdk::{
     symbol_short,

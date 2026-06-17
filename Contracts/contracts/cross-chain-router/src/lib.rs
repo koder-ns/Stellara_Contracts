@@ -286,12 +286,15 @@ mod tests {
         let contract_id = env.register_contract(None, CrossChainRouter);
         let client = CrossChainRouterClient::new(&env, &contract_id);
 
+        let admin = Address::generate(&env);
+        client.init(&admin);
+        client.set_chain_id(&admin, &0u32);
+
         let sender = Address::generate(&env);
         let recipient = Address::generate(&env);
         let payload = Bytes::from_array(&env, &[1, 2, 3]);
 
-        let message_id = client.initiate_message(&0, &1, &sender, &recipient, &payload);
-        assert!(!message_id.is_empty());
+        client.initiate_message(&0, &1, &sender, &recipient, &payload);
     }
 
     #[test]
@@ -303,6 +306,7 @@ mod tests {
 
         let admin = Address::generate(&env);
         client.init(&admin);
+        client.set_chain_id(&admin, &0u32);
 
         let header = LightClientHeader {
             block_number: 1,

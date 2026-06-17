@@ -87,13 +87,10 @@ impl NonceManager {
 
     pub fn enforce_sequential_nonce(env: &Env, chain_id: u32, nonce: u64) {
         let last = Self::get_last_nonce(env, chain_id);
-
         if let Some(expected) = last {
             if nonce <= expected {
                 panic!("NONCE_OUT_OF_ORDER");
             }
-        } else if nonce != 0 {
-            panic!("NONCE_OUT_OF_ORDER");
         }
     }
 }

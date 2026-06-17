@@ -3,8 +3,6 @@
 //! This module contains formal specifications and proofs for critical
 //! trading logic invariants and governance safety properties.
 
-use crate::*;
-
 /// Trading Logic Invariants:
 /// 1. Order remaining amount never exceeds original amount
 /// 2. Trade amounts are always positive
@@ -101,8 +99,6 @@ mod kani_proofs {
 
 #[cfg(test)]
 mod formal_specs {
-    use super::*;
-
     /// Formal Specification for Order Matching
     ///
     /// Pre-conditions:

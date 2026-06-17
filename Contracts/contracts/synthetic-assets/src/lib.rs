@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, Address, Env, Symbol,
 };
 
 #[contracterror]
@@ -44,7 +44,6 @@ pub struct SyntheticConfig {
 mod keys {
     use soroban_sdk::{symbol_short, Symbol};
     pub const ADMIN: Symbol = symbol_short!("admin");
-    pub const CONFIG: Symbol = symbol_short!("config");
 }
 
 #[contract]
