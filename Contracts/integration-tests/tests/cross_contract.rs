@@ -67,22 +67,28 @@ impl MockTokenContract {
 //   Vec<(Address, soroban_sdk::Vec<Val>, Val)>
 //             contract  topics           data
 //
-// Topics are raw Val — the easiest cross-version way to compare is to
-// convert the expected Symbol to its raw Val bits via IntoVal, then
-// compare the u64 representations.
+// Long symbols (>9 chars) are heap-allocated in the Soroban test VM — two
+// Symbol::new calls for the same string produce different object handles.
+// The only stable comparison is to convert both sides to their string
+// representation via soroban_sdk::Symbol::to_string.
 // ─────────────────────────────────────────────────────────────────────────────
 fn assert_event_emitted(env: &Env, expected_topic: Symbol) {
-    use soroban_sdk::IntoVal;
-    let expected_val: soroban_sdk::Val = expected_topic.into_val(env);
-    let expected_bits = expected_val.get_payload();
+    use soroban_sdk::TryFromVal;
+    let expected_str = expected_topic.to_string();
 
     let found = env.events().all().iter().any(|(_, topics, _)| {
-        topics
-            .iter()
-            .any(|t| t.get_payload() == expected_bits)
+        topics.iter().any(|raw_val| {
+            Symbol::try_from_val(env, &raw_val)
+                .map(|s| s.to_string() == expected_str)
+                .unwrap_or(false)
+        })
     });
 
-    assert!(found, "Expected event with topic was not emitted");
+    assert!(
+        found,
+        "Expected event with topic \"{}\" was not emitted",
+        expected_str
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
