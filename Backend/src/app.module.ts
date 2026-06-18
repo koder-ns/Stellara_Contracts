@@ -30,6 +30,7 @@ import { AuditModule } from './audit/audit.module';
 import { AuditLog } from './audit/audit.entity';
 import { VoiceJob } from './voice/entities/voice-job.entity';
 import { ThrottleModule } from './throttle/throttle.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -75,6 +76,7 @@ import { ThrottleModule } from './throttle/throttle.module';
     AuditModule,
     ThrottleModule,
     AiModule,
+    HealthModule,
   ],
 
   controllers: [AppController],
