@@ -1,11 +1,11 @@
 #![no_std]
 
-use shared::acl::ACL;
+use shared::acl::{ACL, ROLE_ADMIN, PERMISSION_PAUSE, PERMISSION_UNPAUSE, PERMISSION_SET_RATE, PERMISSION_PREMIUM, PERMISSION_MGR_ACL};
 use shared::circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerState, PauseLevel,
 };
 use shared::fees::FeeManager;
-use shared::governance::{GovernanceManager, GovernanceRole, UpgradeProposal};
+use shared::governance::{GovernanceManager, UpgradeProposal};
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Symbol, Vec,
 };
@@ -25,7 +25,6 @@ mod storage_keys {
     use soroban_sdk::{symbol_short, Symbol};
 
     pub const INIT: Symbol = symbol_short!("init");
-    pub const ROLES: Symbol = symbol_short!("roles");
     pub const STATS: Symbol = symbol_short!("stats");
     pub const VERSION: Symbol = symbol_short!("ver");
     pub const TRADE_COUNT: Symbol = symbol_short!("t_cnt");
@@ -813,21 +812,14 @@ impl UpgradeableTradingContract {
             return Err(TradeError::Unauthorized);
         }
 
-        let mut roles = soroban_sdk::Map::new(&env);
-        roles.set(admin.clone(), GovernanceRole::Admin);
-        for approver in approvers.iter() {
-            roles.set(approver, GovernanceRole::Approver);
-        }
-        roles.set(executor, GovernanceRole::Executor);
+        GovernanceManager::init_governance_roles(&env, admin.clone(), approvers.clone(), executor.clone());
 
-        let admin_role = Symbol::new(&env, "admin");
-        ACL::create_role(&env, &admin_role);
-        ACL::assign_role(&env, &admin, &admin_role);
-        ACL::assign_permission(&env, &admin_role, &Symbol::new(&env, "set_rate"));
-        ACL::assign_permission(&env, &admin_role, &Symbol::new(&env, "premium"));
-        ACL::assign_permission(&env, &admin_role, &Symbol::new(&env, "pause"));
-        ACL::assign_permission(&env, &admin_role, &Symbol::new(&env, "unpause"));
-        ACL::assign_permission(&env, &admin_role, &Symbol::new(&env, "manage_acl"));
+        // Assign additional permissions to admin role
+        ACL::assign_permission(&env, &ROLE_ADMIN, &PERMISSION_SET_RATE);
+        ACL::assign_permission(&env, &ROLE_ADMIN, &PERMISSION_PREMIUM);
+        ACL::assign_permission(&env, &ROLE_ADMIN, &PERMISSION_PAUSE);
+        ACL::assign_permission(&env, &ROLE_ADMIN, &PERMISSION_UNPAUSE);
+        ACL::assign_permission(&env, &ROLE_ADMIN, &PERMISSION_MGR_ACL);
 
         let stats = TradeStats {
             total_trades: 0,
@@ -845,7 +837,6 @@ impl UpgradeableTradingContract {
 
         let storage = env.storage().persistent();
         storage.set(&storage_keys::INIT, &true);
-        storage.set(&storage_keys::ROLES, &roles);
         storage.set(&storage_keys::STATS, &stats);
         storage.set(&storage_keys::VERSION, &CONTRACT_VERSION);
         storage.set(&storage_keys::TRADE_COUNT, &0u64);
@@ -1073,7 +1064,7 @@ impl UpgradeableTradingContract {
     ) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "set_rate"));
+        ACL::require_permission(&env, &admin, &PERMISSION_SET_RATE);
 
         if window_secs == 0 || user_limit == 0 || global_limit == 0 || premium_user_limit == 0 {
             return Err(TradeError::InvalidRateLimitConfig);
@@ -1099,7 +1090,7 @@ impl UpgradeableTradingContract {
     ) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "premium"));
+        ACL::require_permission(&env, &admin, &PERMISSION_PREMIUM);
 
         let mut premium_users: soroban_sdk::Map<Address, bool> = env
             .storage()
@@ -1220,7 +1211,7 @@ impl UpgradeableTradingContract {
     pub fn set_pause_level(env: Env, admin: Address, level: PauseLevel) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "pause"));
+        ACL::require_permission(&env, &admin, &PERMISSION_PAUSE);
         set_trade_pause_level(&env, level);
         Ok(())
     }
@@ -1229,7 +1220,7 @@ impl UpgradeableTradingContract {
     pub fn pause_function(env: Env, admin: Address, func_name: Symbol) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "pause"));
+        ACL::require_permission(&env, &admin, &PERMISSION_PAUSE);
         pause_trade_function(&env, func_name);
         Ok(())
     }
@@ -1238,7 +1229,7 @@ impl UpgradeableTradingContract {
     pub fn unpause_function(env: Env, admin: Address, func_name: Symbol) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "unpause"));
+        ACL::require_permission(&env, &admin, &PERMISSION_UNPAUSE);
         unpause_trade_function(&env, func_name);
         Ok(())
     }
@@ -1257,7 +1248,7 @@ impl UpgradeableTradingContract {
     pub fn pause(env: Env, admin: Address) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "pause"));
+        ACL::require_permission(&env, &admin, &PERMISSION_PAUSE);
         set_trade_pause_level(&env, PauseLevel::Full);
         Ok(())
     }
@@ -1266,7 +1257,7 @@ impl UpgradeableTradingContract {
     pub fn unpause(env: Env, admin: Address) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "unpause"));
+        ACL::require_permission(&env, &admin, &PERMISSION_UNPAUSE);
         set_trade_pause_level(&env, PauseLevel::None);
         Ok(())
     }
@@ -1274,7 +1265,7 @@ impl UpgradeableTradingContract {
     pub fn create_role(env: Env, admin: Address, role: Symbol) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "manage_acl"));
+        ACL::require_permission(&env, &admin, &PERMISSION_MGR_ACL);
         ACL::create_role(&env, &role);
         Ok(())
     }
@@ -1287,7 +1278,7 @@ impl UpgradeableTradingContract {
     ) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "manage_acl"));
+        ACL::require_permission(&env, &admin, &PERMISSION_MGR_ACL);
         ACL::assign_role(&env, &user, &role);
         Ok(())
     }
@@ -1300,7 +1291,7 @@ impl UpgradeableTradingContract {
     ) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "manage_acl"));
+        ACL::require_permission(&env, &admin, &PERMISSION_MGR_ACL);
         ACL::assign_permission(&env, &role, &permission);
         Ok(())
     }
@@ -1313,7 +1304,7 @@ impl UpgradeableTradingContract {
     ) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "manage_acl"));
+        ACL::require_permission(&env, &admin, &PERMISSION_MGR_ACL);
         ACL::assign_permissions_batch(&env, &role, &permissions);
         Ok(())
     }
@@ -1326,7 +1317,7 @@ impl UpgradeableTradingContract {
     ) -> Result<(), TradeError> {
         admin.require_auth();
         require_initialized(&env)?;
-        ACL::require_permission(&env, &admin, &Symbol::new(&env, "manage_acl"));
+        ACL::require_permission(&env, &admin, &PERMISSION_MGR_ACL);
         ACL::set_parent_role(&env, &child, &parent);
         Ok(())
     }

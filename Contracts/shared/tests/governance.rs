@@ -16,11 +16,12 @@
 
 extern crate std;
 
-use shared::governance::{GovernanceError, GovernanceManager, GovernanceRole, ProposalStatus};
+use shared::acl::{ACL, ROLE_APPROVER};
+use shared::governance::{GovernanceError, GovernanceManager, ProposalStatus};
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
     testutils::{Address as _, Ledger},
-    Address, Env, Map, Symbol, Vec,
+    Address, Env, Vec,
 };
 
 /// Minimal host contract used only to provide a contract-storage context so the
@@ -32,7 +33,6 @@ pub struct GovHost;
 #[contractimpl]
 impl GovHost {}
 
-const ROLES_KEY: Symbol = symbol_short!("roles");
 const BASE_TS: u64 = 1_000_000;
 
 /// Register the host contract and pin a deterministic ledger timestamp.
@@ -41,16 +41,15 @@ fn setup(env: &Env) -> Address {
     env.register_contract(None, GovHost)
 }
 
-/// Write the role map exactly the way the production contracts do during `init`.
+/// Initialize ACL roles and permissions the way production contracts do during `init`.
 /// Must be called inside an `env.as_contract` closure.
 fn set_roles(env: &Env, admin: &Address, approvers: &Vec<Address>, executor: &Address) {
-    let mut roles: Map<Address, GovernanceRole> = Map::new(env);
-    roles.set(admin.clone(), GovernanceRole::Admin);
-    for approver in approvers.iter() {
-        roles.set(approver, GovernanceRole::Approver);
-    }
-    roles.set(executor.clone(), GovernanceRole::Executor);
-    env.storage().persistent().set(&ROLES_KEY, &roles);
+    GovernanceManager::init_governance_roles(
+        env,
+        admin.clone(),
+        approvers.clone(),
+        executor.clone(),
+    );
 }
 
 /// Build a `Vec<Address>` of freshly generated approver addresses.
@@ -71,11 +70,10 @@ fn make_approvers(env: &Env, n: u32) -> Vec<Address> {
 /// reaches the threshold — never before.
 #[test]
 fn fuzz_quorum_flips_exactly_at_threshold() {
-    let env = Env::default();
-    let id = setup(&env);
-
     for n in 1u32..=6 {
         for threshold in 1u32..=n {
+            let env = Env::default();
+            let id = setup(&env);
             let admin = Address::generate(&env);
             let executor = Address::generate(&env);
             let approvers = make_approvers(&env, n);
@@ -275,14 +273,13 @@ fn approver_not_in_proposal_list_is_unauthorized() {
     let outsider = Address::generate(&env);
 
     env.as_contract(&id, || {
-        let mut roles: Map<Address, GovernanceRole> = Map::new(&env);
-        roles.set(admin.clone(), GovernanceRole::Admin);
-        for a in approvers.iter() {
-            roles.set(a, GovernanceRole::Approver);
-        }
-        roles.set(outsider.clone(), GovernanceRole::Approver);
-        roles.set(executor.clone(), GovernanceRole::Executor);
-        env.storage().persistent().set(&ROLES_KEY, &roles);
+        GovernanceManager::init_governance_roles(
+            &env,
+            admin.clone(),
+            approvers.clone(),
+            executor.clone(),
+        );
+        ACL::assign_role(&env, &outsider, &ROLE_APPROVER);
 
         let pid = GovernanceManager::propose_upgrade(
             &env,
