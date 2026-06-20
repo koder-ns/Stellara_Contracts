@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
+import { randomUUID } from 'crypto';
 import { Workflow } from '../entities/workflow.entity';
 import { WorkflowStep } from '../entities/workflow-step.entity';
 import { WorkflowDefinition, StepDefinition, WorkflowContext } from '../types';
@@ -8,6 +9,15 @@ import { WorkflowState } from '../types/workflow-state.enum';
 import { StepState } from '../types/step-state.enum';
 import { WorkflowStateMachineService } from './workflow-state-machine.service';
 import { IdempotencyService } from './idempotency.service';
+import { CompensationService } from './compensation.service';
+import { RedisService } from '../../redis/redis.service';
+
+class WorkflowTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkflowTimeoutError';
+  }
+}
 
 @Injectable()
 export class WorkflowExecutionService {
@@ -21,6 +31,8 @@ export class WorkflowExecutionService {
     private readonly stepRepository: Repository<WorkflowStep>,
     private readonly stateMachine: WorkflowStateMachineService,
     private readonly idempotencyService: IdempotencyService,
+    private readonly compensationService: CompensationService,
+    private readonly redisService: RedisService,
   ) {}
 
   /**
@@ -75,40 +87,72 @@ export class WorkflowExecutionService {
       return existingWorkflow;
     }
 
-    // Create new workflow
-    const workflow = this.workflowRepository.create({
-      idempotencyKey,
-      type: type as any,
-      input,
-      userId,
-      walletAddress,
-      context,
-      totalSteps: definition.steps.length,
-      maxRetries: definition.maxRetries || 3,
-      requiresCompensation: definition.requiresCompensation || false,
-    });
+    const lockKey = this.getWorkflowLockKey(idempotencyKey);
+    const lockToken = randomUUID();
+    const lockAcquired = await this.acquireWorkflowLock(lockKey, lockToken);
 
-    const savedWorkflow = await this.workflowRepository.save(workflow);
+    if (!lockAcquired) {
+      const lockedWorkflow = await this.waitForWorkflow(
+        idempotencyKey,
+        5000,
+        100,
+      );
 
-    // Create workflow steps
-    const steps = definition.steps.map((stepDef, index) => {
-      return this.stepRepository.create({
-        workflowId: savedWorkflow.id,
-        stepName: stepDef.name,
-        stepIndex: index,
-        config: stepDef.config,
-        requiresCompensation: !!stepDef.compensate,
-        isIdempotent: stepDef.isIdempotent,
-        maxRetries: stepDef.maxRetries || 3,
+      if (lockedWorkflow) {
+        this.logger.log(
+          `Returning workflow created by another worker for idempotency key: ${idempotencyKey}`,
+        );
+        return lockedWorkflow;
+      }
+
+      throw new Error(
+        `Workflow already being processed for idempotency key: ${idempotencyKey}`,
+      );
+    }
+
+    try {
+      // Create new workflow
+      const workflow = this.workflowRepository.create({
+        idempotencyKey,
+        type: type as any,
+        input,
+        userId,
+        walletAddress,
+        context,
+        totalSteps: definition.steps.length,
+        maxRetries: definition.maxRetries || 3,
+        requiresCompensation: definition.requiresCompensation || false,
       });
-    });
 
-    await this.stepRepository.save(steps);
+      const savedWorkflow = await this.workflowRepository.save(workflow);
 
-    // Start execution
-    await this.executeWorkflow(savedWorkflow);
+      // Create workflow steps
+      const steps = definition.steps.map((stepDef, index) => {
+        return this.stepRepository.create({
+          workflowId: savedWorkflow.id,
+          stepName: stepDef.name,
+          stepIndex: index,
+          config: stepDef.config,
+          requiresCompensation: !!stepDef.compensate,
+          isIdempotent: stepDef.isIdempotent,
+          maxRetries: stepDef.maxRetries || 3,
+        });
+      });
 
-    return savedWorkflow;
+      await this.stepRepository.save(steps);
+
+      // Start execution
+      await this.executeWorkflow(savedWorkflow);
+
+      return (
+        (await this.workflowRepository.findOne({
+          where: { id: savedWorkflow.id },
+          relations: ['steps'],
+        })) ?? savedWorkflow
+      );
+    } finally {
+      await this.releaseWorkflowLock(lockKey, lockToken);
+    }
   }
 
   /**
@@ -147,11 +191,19 @@ export class WorkflowExecutionService {
 
       this.logger.log(`Workflow completed successfully: ${workflow.id}`);
     } catch (error) {
+      if (error instanceof WorkflowTimeoutError) {
+        this.logger.warn(
+          `Workflow timed out and will rely on automatic compensation: ${workflow.id}`,
+        );
+        return;
+      }
+
       this.logger.error(`Workflow failed: ${workflow.id}`, error);
 
       workflow.state = WorkflowState.FAILED;
       workflow.failedAt = new Date();
-      workflow.failureReason = error.message;
+      workflow.failureReason =
+        error instanceof Error ? error.message : 'Unknown workflow failure';
       await this.workflowRepository.save(workflow);
 
       throw error;
@@ -174,7 +226,12 @@ export class WorkflowExecutionService {
       workflow.currentStepIndex = step.stepIndex;
       await this.workflowRepository.save(workflow);
 
-      await this.executeStep(workflow, step, definition.steps[step.stepIndex]);
+      await this.executeStep(
+        workflow,
+        step,
+        definition.steps[step.stepIndex],
+        definition.timeout,
+      );
     }
   }
 
@@ -185,6 +242,7 @@ export class WorkflowExecutionService {
     workflow: Workflow,
     step: WorkflowStep,
     stepDefinition: StepDefinition,
+    workflowTimeout?: number,
   ): Promise<void> {
     this.logger.debug(
       `Executing step: ${step.stepName} for workflow: ${workflow.id}`,
@@ -231,12 +289,19 @@ export class WorkflowExecutionService {
         await this.stepRepository.save(step);
       }
 
-      // Execute step
-      const output = await this.executeWithIdempotency(
-        stepDefinition,
-        stepInput,
-        context,
-        stepIdempotencyKey,
+      const timeoutMs = stepDefinition.timeout ?? workflowTimeout;
+
+      // Execute step with timeout and idempotency protection
+      const output = await this.executeStepWithTimeout(
+        () =>
+          this.executeWithIdempotency(
+            stepDefinition,
+            stepInput,
+            context,
+            stepIdempotencyKey,
+          ),
+        timeoutMs,
+        step.stepName,
       );
 
       // Update step with successful result
@@ -247,11 +312,27 @@ export class WorkflowExecutionService {
 
       this.logger.debug(`Step completed successfully: ${step.stepName}`);
     } catch (error) {
+      if (error instanceof WorkflowTimeoutError) {
+        step.state = StepState.FAILED;
+        step.failedAt = new Date();
+        step.failureReason = error.message;
+        step.retryCount += 1;
+        await this.stepRepository.save(step);
+
+        this.logger.warn(
+          `Step timed out, triggering compensation: ${step.stepName} for workflow ${workflow.id}`,
+        );
+
+        await this.compensationService.compensateWorkflow(workflow.id);
+        throw error;
+      }
+
       this.logger.error(`Step failed: ${step.stepName}`, error);
 
       step.state = StepState.FAILED;
       step.failedAt = new Date();
-      step.failureReason = error.message;
+      step.failureReason =
+        error instanceof Error ? error.message : 'Unknown step failure';
       step.retryCount += 1;
 
       // Check if we should retry
@@ -301,6 +382,39 @@ export class WorkflowExecutionService {
     // For idempotent steps, we would check for previous execution
     // This is a simplified implementation - in production, you'd use a distributed cache
     return await stepDefinition.execute(input, context);
+  }
+
+  /**
+   * Execute a step with an optional timeout.
+   */
+  private async executeStepWithTimeout<T>(
+    operation: () => Promise<T>,
+    timeoutMs: number | undefined,
+    stepName: string,
+  ): Promise<T> {
+    if (!timeoutMs || timeoutMs <= 0) {
+      return await operation();
+    }
+
+    return await new Promise<T>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        reject(
+          new WorkflowTimeoutError(
+            `Step ${stepName} exceeded timeout of ${timeoutMs}ms`,
+          ),
+        );
+      }, timeoutMs);
+
+      operation()
+        .then((result) => {
+          clearTimeout(timeoutHandle);
+          resolve(result);
+        })
+        .catch((error) => {
+          clearTimeout(timeoutHandle);
+          reject(error);
+        });
+    });
   }
 
   /**
@@ -415,5 +529,63 @@ export class WorkflowExecutionService {
    */
   private async delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private getWorkflowLockKey(idempotencyKey: string): string {
+    return `workflow:lock:${idempotencyKey}`;
+  }
+
+  private async acquireWorkflowLock(
+    lockKey: string,
+    token: string,
+    ttlSeconds: number = 3600,
+  ): Promise<boolean> {
+    const result = await this.redisService.client.set(lockKey, token, {
+      NX: true,
+      EX: ttlSeconds,
+    });
+
+    return result === 'OK';
+  }
+
+  private async releaseWorkflowLock(
+    lockKey: string,
+    token: string,
+  ): Promise<void> {
+    try {
+      const currentToken = await this.redisService.client.get(lockKey);
+      if (currentToken === token) {
+        await this.redisService.client.del(lockKey);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to release workflow lock ${lockKey}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private async waitForWorkflow(
+    idempotencyKey: string,
+    timeoutMs: number,
+    intervalMs: number,
+  ): Promise<Workflow | null> {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const workflow = await this.workflowRepository.findOne({
+        where: { idempotencyKey },
+        relations: ['steps'],
+      });
+
+      if (workflow) {
+        return workflow;
+      }
+
+      await this.delay(intervalMs);
+    }
+
+    return null;
   }
 }
